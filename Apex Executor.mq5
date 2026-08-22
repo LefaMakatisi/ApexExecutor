@@ -10,6 +10,7 @@
 #include "3_RiskCalculator.mqh"
 #include "4_OrderExecution.mqh"
 #include "5_OrderManagement.mqh"
+#include "6_CorrelatedOrderManager.mqh"
 
 CTrade trade;
 
@@ -66,6 +67,50 @@ void OnDeinit(const int reason)
 void OnTick()
 {
 
+}
+
+//+------------------------------------------------------------------+
+//| Trade Transaction                                                |
+//+------------------------------------------------------------------+
+void OnTradeTransaction(
+   const MqlTradeTransaction &trans,
+   const MqlTradeRequest &request,
+   const MqlTradeResult &result)
+{
+   // Only process newly created deals
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+      return;
+
+   ulong dealTicket = trans.deal;
+
+   if(dealTicket == 0)
+      return;
+
+   if(!HistoryDealSelect(dealTicket))
+      return;
+
+   // Check that the deal opened a position
+   ENUM_DEAL_ENTRY entry =
+      (ENUM_DEAL_ENTRY)HistoryDealGetInteger(
+         dealTicket,
+         DEAL_ENTRY
+      );
+
+   if(entry != DEAL_ENTRY_IN)
+      return;
+
+   // Get the symbol that was triggered
+   string triggeredSymbol =
+      HistoryDealGetString(
+         dealTicket,
+         DEAL_SYMBOL
+      );
+
+   if(triggeredSymbol == "")
+      return;
+
+   // Delete its correlated pending order
+   DeleteCorrelatedPendingOrder(triggeredSymbol);
 }
 
 //+------------------------------------------------------------------------------------------+
