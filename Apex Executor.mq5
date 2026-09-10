@@ -5,299 +5,504 @@
 #property version   "1.00"
 
 #include <Trade/Trade.mqh>
+
 #include "1_ExecutionPanel.mqh"
-#include "2_FibonacciReader.mqh"
+#include "2_Fibonacci.mqh"
 #include "3_RiskCalculator.mqh"
 #include "4_OrderExecution.mqh"
 #include "5_OrderManagement.mqh"
-#include "6_CorrelatedOrderManager.mqh"
 
 CTrade trade;
 
-// Global Variables
+//+------------------------------------------------------------------+
+//| Global Variables                                                 |
+//+------------------------------------------------------------------+
+
 string SelectedFib = "";
-bool HasSelection = false;
+bool   HasSelection = false;
+
 
 //+------------------------------------------------------------------+
 //| Expert initialization                                            |
 //+------------------------------------------------------------------+
+
 int OnInit()
 {
    Print("[Apex] Loaded");
 
-   ChartSetInteger(0,CHART_EVENT_OBJECT_CREATE,true);
-   ChartSetInteger(0,CHART_EVENT_OBJECT_DELETE,true);
+   //==================================================
+   // Enable chart events
+   //==================================================
+
+   ChartSetInteger(
+      0,
+      CHART_EVENT_OBJECT_CREATE,
+      true
+   );
+
+   ChartSetInteger(
+      0,
+      CHART_EVENT_OBJECT_DELETE,
+      true
+   );
+
+   //==================================================
+   // Create Execution Panel
+   //==================================================
 
    CreateExecutionPanel();
 
-   double entry;
-   double sl;
-   double tp;
+   //==================================================
+   // Create Apex FIB button
+   //==================================================
 
-   if(LoadFibState(SelectedFib,entry,sl,tp))
-   {
-      HasSelection = true;
+   CreateFibonacciButton();
 
-      UpdateExecutionPanel(SelectedFib,entry,sl,tp);
-}
-   ScanFibObjects();
+   //==================================================
+   // Do NOT create Fibonacci on startup
+   //==================================================
+
+   SelectedFib  = "";
+   HasSelection = false;
+
+   ChartRedraw();
 
    return(INIT_SUCCEEDED);
-} 
+}
+
 
 //+------------------------------------------------------------------+
 //| Expert deinitialization                                          |
 //+------------------------------------------------------------------+
+
 void OnDeinit(const int reason)
 {
+   //==================================================
+   // Remove Fibonacci only when EA is removed
+   //==================================================
+
    if(reason == REASON_REMOVE)
+   {
       DeleteFibState();
-   
+
+      if(ObjectFind(0,EA_FIB_NAME) != -1)
+         ObjectDelete(0,EA_FIB_NAME);
+   }
+
+   //==================================================
+   // Delete button
+   //==================================================
+
+   DeleteFibonacciButton();
+
+   //==================================================
+   // Delete panel
+   //==================================================
+
    DeleteExecutionPanel();
 
-   SelectedFib = "";
+   SelectedFib  = "";
    HasSelection = false;
 
    Print("[Apex] Removed");
 }
 
+
 //+------------------------------------------------------------------+
 //| Tick                                                             |
 //+------------------------------------------------------------------+
+
 void OnTick()
 {
 
 }
 
 //+------------------------------------------------------------------+
-//| Trade Transaction                                                |
+//| Chart Events                                                     |
 //+------------------------------------------------------------------+
-void OnTradeTransaction(
-   const MqlTradeTransaction &trans,
-   const MqlTradeRequest &request,
-   const MqlTradeResult &result)
+
+void OnChartEvent(
+   const int id,
+   const long &lparam,
+   const double &dparam,
+   const string &sparam)
 {
-   // Only process newly created deals
-   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
-      return;
+   //==================================================
+   // Fibonacci Deleted
+   //==================================================
 
-   ulong dealTicket = trans.deal;
-
-   if(dealTicket == 0)
-      return;
-
-   if(!HistoryDealSelect(dealTicket))
-      return;
-
-   // Check that the deal opened a position
-   ENUM_DEAL_ENTRY entry =
-      (ENUM_DEAL_ENTRY)HistoryDealGetInteger(
-         dealTicket,
-         DEAL_ENTRY
-      );
-
-   if(entry != DEAL_ENTRY_IN)
-      return;
-
-   // Get the symbol that was triggered
-   string triggeredSymbol =
-      HistoryDealGetString(
-         dealTicket,
-         DEAL_SYMBOL
-      );
-
-   if(triggeredSymbol == "")
-      return;
-
-   // Delete its correlated pending order
-   DeleteCorrelatedPendingOrder(triggeredSymbol);
-}
-
-//+------------------------------------------------------------------------------------------+
-//| Chart Events                                                                             |
-//+------------------------------------------------------------------------------------------+
-void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
-                  
- {
-   switch(id)
+   if(id == CHARTEVENT_OBJECT_DELETE)
    {
-      case CHARTEVENT_OBJECT_CREATE:
+      if(sparam == EA_FIB_NAME)
+      {
+         // Clear selected Fibonacci
+         HasSelection = false;
+         SelectedFib  = "";
 
-         if(ObjectGetInteger(0,sparam,OBJPROP_TYPE)==OBJ_FIBO)
+         // Delete saved Fibonacci state
+         DeleteFibState();
+
+         // Keep the panel visible
+         // Only clear the Fibonacci values
+         ClearExecutionPanel();
+
+         // Make sure panel exists
+         if(ObjectFind(0,PANEL_NAME) == -1)
          {
-            // Nothing to print
-
+            CreateExecutionPanel();
          }
 
-         break;
+         ChartRedraw();
 
-       case CHARTEVENT_OBJECT_DELETE:
- 
-         Print("Deleted: ", sparam);
+         Print("[Apex] Apex FIB deleted. Panel cleared.");
+      }
 
-       if(HasSelection && SelectedFib == sparam)
-    {
-      DeleteFibState();
-      SelectedFib = "";
-      HasSelection = false;
-      ClearExecutionPanel();
-
-      Print("Selection cleared.");
+      return;
    }
 
-   break;
 
-      case CHARTEVENT_OBJECT_DRAG:
+   //==================================================
+   // Fibonacci Dragged
+   //==================================================
 
-         // Next:
-         // Move Execute Button
-
-         break;
-
-case CHARTEVENT_OBJECT_CLICK:
-
-   if(ObjectFind(0,sparam)!=-1)
+   if(id == CHARTEVENT_OBJECT_DRAG)
    {
-      // User clicked a Fibonacci
-      if(ObjectGetInteger(0,sparam,OBJPROP_TYPE)==OBJ_FIBO)
+      if(sparam == EA_FIB_NAME)
       {
-         SelectedFib = sparam;
+         double tp;
+         double entry;
+         double sl;
+
+         if(ReadFibPrices(
+               EA_FIB_NAME,
+               tp,
+               entry,
+               sl))
+         {
+            SaveFibState(
+               EA_FIB_NAME,
+               entry,
+               sl,
+               tp
+            );
+
+            UpdateExecutionPanel(
+               EA_FIB_NAME,
+               entry,
+               sl,
+               tp
+            );
+
+            ChartRedraw();
+         }
+
+         return;
+      }
+   }
+
+
+   //==================================================
+   // Object Click
+   //==================================================
+
+   if(id == CHARTEVENT_OBJECT_CLICK)
+   {
+      //==================================================
+      // Apex FIB Button
+      //==================================================
+
+      if(sparam == EA_FIB_BUTTON)
+      {
+         //==================================================
+         // If FIB already exists, select it
+         //==================================================
+
+         if(ObjectFind(0,EA_FIB_NAME) != -1)
+         {
+            SelectedFib  = EA_FIB_NAME;
+            HasSelection = true;
+
+            double tp;
+            double entry;
+            double sl;
+
+            if(ReadFibPrices(
+                  EA_FIB_NAME,
+                  tp,
+                  entry,
+                  sl))
+            {
+               SaveFibState(
+                  EA_FIB_NAME,
+                  entry,
+                  sl,
+                  tp
+               );
+
+               UpdateExecutionPanel(
+                  EA_FIB_NAME,
+                  entry,
+                  sl,
+                  tp
+               );
+            }
+
+            return;
+         }
+
+
+         //==================================================
+         // FIB does not exist
+         // Create it
+         //==================================================
+
+         if(CreateEAFibonacci())
+         {
+            SelectedFib  = EA_FIB_NAME;
+            HasSelection = true;
+
+            double tp;
+            double entry;
+            double sl;
+
+            if(ReadFibPrices(
+                  EA_FIB_NAME,
+                  tp,
+                  entry,
+                  sl))
+            {
+               SaveFibState(
+                  EA_FIB_NAME,
+                  entry,
+                  sl,
+                  tp
+               );
+
+               UpdateExecutionPanel(
+                  EA_FIB_NAME,
+                  entry,
+                  sl,
+                  tp
+               );
+            }
+
+            Print("[Apex] Apex FIB activated.");
+         }
+
+         return;
+      }
+
+
+      //==================================================
+      // User clicked Apex FIB
+      //==================================================
+
+      if(sparam == EA_FIB_NAME)
+      {
+         SelectedFib  = EA_FIB_NAME;
          HasSelection = true;
 
          double tp;
          double entry;
          double sl;
-         
-    // Read Fib Prices
-    if(ReadFibPrices(SelectedFib,tp,entry,sl))
-{
-    SaveFibState(SelectedFib,entry,sl,tp);
 
-    UpdateExecutionPanel(SelectedFib,entry,sl,tp);
-}
+         if(ReadFibPrices(
+               EA_FIB_NAME,
+               tp,
+               entry,
+               sl))
+         {
+            SaveFibState(
+               EA_FIB_NAME,
+               entry,
+               sl,
+               tp
+            );
 
-   Print("Selected: ", SelectedFib);
-}
+            UpdateExecutionPanel(
+               EA_FIB_NAME,
+               entry,
+               sl,
+               tp
+            );
+         }
 
-      // User clicked the Execute button
+         Print("[Apex] Apex FIB selected.");
+
+         return;
+      }
+
+
+      //==================================================
+      // Execute Button
+      //==================================================
+
       if(sparam == BTN_EXECUTE)
       {
-         // No Fibonacci selected
          if(!HasSelection)
          {
-            Print("No Fibonacci selected.");
-            break;
+            Print("[Apex] No Fibonacci selected.");
+            return;
          }
 
-         // Selected Fibonacci no longer exists
-         if(ObjectFind(0, SelectedFib) == -1)
+
+         //==================================================
+         // Check Fibonacci exists
+         //==================================================
+
+         if(ObjectFind(
+               0,
+               EA_FIB_NAME) == -1)
          {
-            SelectedFib = "";
+            Print(
+               "[Apex] Apex FIB does not exist."
+            );
+
+            SelectedFib  = "";
             HasSelection = false;
 
-            // Nothing to print
-            
-            break;
+            ClearExecutionPanel();
+
+            return;
          }
+
+
+         //==================================================
+         // Read Fibonacci
+         //==================================================
 
          double tp;
          double entry;
          double sl;
 
-         if(ReadFibPrices(SelectedFib,tp,entry,sl))
+         if(!ReadFibPrices(
+               EA_FIB_NAME,
+               tp,
+               entry,
+               sl))
          {
-           // Read Risk from the edit box
-           string riskText = ObjectGetString(0,EDIT_RISK,OBJPROP_TEXT);
-
-           double risk = StringToDouble(riskText);
-           SaveRiskValue();
-           
-           // Calculate lots using the entered risk
-           double lots = CalculateLotSize(entry,sl,risk);
-
-   //==================================================
-   // Existing Order Ticket
-   //==================================================
-     ulong ticket;
-
-   //==================================================
-   // Execution Result
-   //==================================================
-     bool result;
-
-   //==================================================
-   // Active Position Protection
-   //==================================================
-     if(HasActivePosition(SelectedFib))
-   {
-     Print("Open Trade Running");
-   
-     break;
-   }
-
-   //==================================================
-   // Existing Pending Order
-   //==================================================
-     if(OrderExists(SelectedFib,ticket))
-   {
-     if(!PendingOrderChanged(SelectedFib,entry,sl,tp,lots))
-   {
-      Print("Pending Order Already Up To Date.");
-
-      result = true;
-   }
-      else
-   {
-      if(DeletePendingOrder(ticket))
-      {
-         result = PlacePendingOrder(SelectedFib,entry,sl,tp,lots);
-      }
-      else
-      {
-         result = false;
-      }
-     }
-    }
-       else
-    {
-           result = PlacePendingOrder(SelectedFib,entry,sl,tp,lots);
-    }
+            return;
+         }
 
 
-   //==================================================
-   // Final Result
-   //==================================================
-     if(result)
-    {
-       // Nothing to print
-    }
-     else
-    {
-         Print("Execution Failed.");
-    }
+         //==================================================
+         // Read Risk
+         //==================================================
 
-        }
-      }
-    }
+         string riskText =
+            ObjectGetString(
+               0,
+               EDIT_RISK,
+               OBJPROP_TEXT
+            );
 
-     break;
-    }
-   }
-//+------------------------------------------------------------------+
-//| Scan Existing Fibonacci Objects                                  |
-//+------------------------------------------------------------------+
-void ScanFibObjects()
-{
-   int total = ObjectsTotal(0);
+         double risk =
+            StringToDouble(riskText);
 
-   for(int i=0;i<total;i++)
-   {
-      string name = ObjectName(0,i);
+         SaveRiskValue();
 
-      if(ObjectGetInteger(0,name,OBJPROP_TYPE)==OBJ_FIBO)
-      {
-         // Nothing to print
 
+         //==================================================
+         // Calculate Lots
+         //==================================================
+
+         double lots =
+            CalculateLotSize(
+               entry,
+               sl,
+               risk
+            );
+
+         if(lots <= 0)
+         {
+            Print("[Apex] Invalid lot size.");
+            return;
+         }
+
+
+         //==================================================
+         // Existing Order Ticket
+         //==================================================
+
+         ulong ticket;
+
+         bool result;
+
+
+         //==================================================
+         // Active Position Protection
+         //==================================================
+
+         if(HasActivePosition(EA_FIB_NAME))
+         {
+            Print("[Apex] Open Trade Running.");
+            return;
+         }
+
+
+         //==================================================
+         // Existing Pending Order
+         //==================================================
+
+         if(OrderExists(
+               EA_FIB_NAME,
+               ticket))
+         {
+            if(!PendingOrderChanged(
+                  EA_FIB_NAME,
+                  entry,
+                  sl,
+                  tp,
+                  lots))
+            {
+               Print(
+                  "[Apex] Pending Order Already Up To Date."
+               );
+
+               result = true;
+            }
+            else
+            {
+               if(DeletePendingOrder(ticket))
+               {
+                  result =
+                     PlacePendingOrder(
+                        EA_FIB_NAME,
+                        entry,
+                        sl,
+                        tp,
+                        lots
+                     );
+               }
+               else
+               {
+                  result = false;
+               }
+            }
+         }
+         else
+         {
+            result =
+               PlacePendingOrder(
+                  EA_FIB_NAME,
+                  entry,
+                  sl,
+                  tp,
+                  lots
+               );
+         }
+
+
+         //==================================================
+         // Final Result
+         //==================================================
+
+         if(!result)
+         {
+            Print("[Apex] Execution Failed.");
+         }
+
+         return;
       }
    }
 }
